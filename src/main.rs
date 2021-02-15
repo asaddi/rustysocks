@@ -243,6 +243,7 @@ async fn process_client(mut stream: TcpStream, client_id: &str, bind_addr: Optio
 }
 
 #[derive(Debug, StructOpt)]
+#[structopt(about)]
 struct Opt {
     #[structopt(short, long, default_value = "0.0.0.0")]
     listen: String,
