@@ -1,10 +1,5 @@
 use std::{convert::{TryFrom}, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
-use tokio::{
-    io::{self, copy, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpSocket, TcpStream, lookup_host},
-    task,
-    time::sleep
-};
+use tokio::{io::{self, copy, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::sleep, try_join};
 use log::{debug, error, info};
 use structopt::StructOpt;
 
@@ -166,31 +161,39 @@ async fn check_socks_request(stream: &mut TcpStream) -> io::Result<String> {
 }
 
 async fn bind_and_connect_to_addr(bind_addr: &str, addr: &str) -> io::Result<TcpStream> {
-    let bind_addrs = lookup_host(bind_addr).await?; // TODO execute these two in parallel
-    let addrs: Vec<SocketAddr> = lookup_host(addr).await?.collect();
+    match try_join!(
+        // Perform the lookups concurrently...
+        lookup_host(bind_addr),
+        lookup_host(addr)
+    ) {
+        Ok((bind_addrs, addrs_raw)) => {
+            let addrs: Vec<SocketAddr> = addrs_raw.collect();
 
-    for baddr in bind_addrs {
-        for addr in &addrs {
-            // Only if bind address type == target address type
-            if baddr.is_ipv4() == addr.is_ipv4() {
-                let socket = if baddr.is_ipv4() {
-                    TcpSocket::new_v4()
-                } else {
-                    TcpSocket::new_v6()
-                }?;
-        
-                socket.set_reuseaddr(true)?;
-        
-                if socket.bind(baddr).is_ok() {
-                    if let Ok(stream) = socket.connect(*addr).await {
-                        return Ok(stream);
+            for baddr in bind_addrs {
+                for addr in &addrs {
+                    // Only if bind address type == target address type
+                    if baddr.is_ipv4() == addr.is_ipv4() {
+                        let socket = if baddr.is_ipv4() {
+                            TcpSocket::new_v4()
+                        } else {
+                            TcpSocket::new_v6()
+                        }?;
+
+                        socket.set_reuseaddr(true)?;
+
+                        if socket.bind(baddr).is_ok() {
+                            if let Ok(stream) = socket.connect(*addr).await {
+                                return Ok(stream);
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
 
-    Err(io::Error::new(io::ErrorKind::InvalidInput, format!("failed to resolve address {}", addr)))
+            Err(io::Error::new(io::ErrorKind::InvalidInput, format!("failed to resolve address {}", addr)))
+        }
+        Err(e) => Err(e)
+    }
 }
 
 async fn connect_socks_target(stream: &mut TcpStream, bind_addr: Option<String>, target_addr: &str) -> io::Result<TcpStream> {
