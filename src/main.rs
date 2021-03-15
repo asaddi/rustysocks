@@ -1,6 +1,6 @@
 use std::{convert::{TryFrom}, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
-use tokio::{io::{self, copy, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::sleep, try_join};
-use log::{debug, error, info};
+use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::sleep, try_join};
+use log::{debug, error, info, trace};
 use structopt::StructOpt;
 
 const SOCKS5_VERSION: u8 = 0x05;
@@ -217,6 +217,62 @@ async fn connect_socks_target(stream: &mut TcpStream, bind_addr: Option<String>,
     }
 }
 
+async fn copy_loop(mut stream: TcpStream, mut remote_stream: TcpStream, client_id: &str) -> io::Result<()> {
+    let mut client_buf = vec![0u8; 2048];
+    let mut remote_buf = vec![0u8; 2048];
+
+    loop {
+        tokio::select! {
+            res = stream.read(&mut client_buf) => {
+                match res {
+                    Ok(n) if n > 0 => {
+                        if remote_stream.write_all(&client_buf[..n]).await.is_err() {
+                            debug!("client {} remote write error", client_id);
+                            break;
+                        }
+                    }
+                    Ok(_) => {
+                        trace!("client {} client EOF", client_id);
+                        break;
+                    }
+                    Err(e) => {
+                        debug!("client {} client read error: {}", client_id, e);
+                        break;
+                    }
+                }
+            }
+            res = remote_stream.read(&mut remote_buf) => {
+                match res {
+                    Ok(n) if n > 0 => {
+                        if stream.write_all(&remote_buf[..n]).await.is_err() {
+                            debug!("client {} client write error", client_id);
+                            break;
+                        }
+                    }
+                    Ok(_) => {
+                        trace!("client {} remote EOF", client_id);
+                        break;
+                    }
+                    Err(e) => {
+                        debug!("client {} remote read error: {} ", client_id, e);
+                        break;
+                    }
+                }
+            }
+            _ = sleep(Duration::from_millis(900_000)) => { // 15 minutes
+                // Timeout
+                debug!("client {} timed out", client_id);
+                break;
+            }
+        }
+    }
+
+    let _ = stream.shutdown().await.is_ok();
+    let _ = remote_stream.shutdown().await.is_ok();
+
+    Ok(())
+}
+
 async fn process_client(mut stream: TcpStream, client_id: &str, bind_addr: Option<String>) -> io::Result<()> {
     let auth_method = check_auth_method(&mut stream).await?;
     send_auth_response(&mut stream, auth_method).await?;
@@ -229,18 +285,7 @@ async fn process_client(mut stream: TcpStream, client_id: &str, bind_addr: Optio
 
     // From this point onward, it's as if the client is directly connected to the remote
 
-    let (mut client_read, mut client_write) = stream.into_split();
-    let (mut remote_read, mut remote_write) = remote_stream.into_split();
-
-    // Copy client-to-remote in a new thread
-    task::spawn(async move {
-        let _ = copy(&mut client_read, &mut remote_write).await.is_ok();
-        let _ = remote_write.shutdown().await.is_ok();
-    });
-
-    // Copy remote-to-client in this thread
-    copy(&mut remote_read, &mut client_write).await?;
-    client_write.shutdown().await?;
+    copy_loop(stream, remote_stream, client_id).await?;
 
     Ok(())
 }
