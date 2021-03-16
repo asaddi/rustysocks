@@ -220,7 +220,7 @@ impl Socks5Protocol {
         }
     }
 
-    async fn copy_loop(mut self: Socks5Protocol, mut remote_stream: TcpStream, idle_timeout: u64) -> io::Result<()> {
+    async fn copy_loop(mut self: Socks5Protocol, mut remote_stream: TcpStream, idle_timeout: Duration) -> io::Result<()> {
         let mut client_buf = vec![0u8; 2048];
         let mut remote_buf = vec![0u8; 2048];
 
@@ -262,7 +262,7 @@ impl Socks5Protocol {
                         }
                     }
                 }
-                _ = sleep(Duration::from_secs(idle_timeout)) => {
+                _ = sleep(idle_timeout) => {
                     // Timeout
                     debug!("client {} timed out", self.client_id);
                     break;
@@ -292,25 +292,25 @@ impl Socks5Protocol {
 
 struct Socks5Client {
     protocol: Socks5Protocol,
-    negotiation_timeout: u64,
-    idle_timeout: u64
+    negotiation_timeout: Duration,
+    idle_timeout: Duration
 }
 
 impl Socks5Client {
     pub fn new(stream: TcpStream, client_id: String, bind_addr: Option<String>) -> Socks5Client {
         Socks5Client {
             protocol: Socks5Protocol::new(stream, client_id, bind_addr),
-            negotiation_timeout: 30,
-            idle_timeout: 900,
+            negotiation_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(900),
         }
     }
 
-    pub fn with_negotiation_timeout(mut self: Socks5Client, timeout: u64) -> Socks5Client {
+    pub fn with_negotiation_timeout(mut self: Socks5Client, timeout: Duration) -> Socks5Client {
         self.negotiation_timeout = timeout;
         self
     }
 
-    pub fn with_idle_timeout(mut self: Socks5Client, timeout: u64) -> Socks5Client {
+    pub fn with_idle_timeout(mut self: Socks5Client, timeout: Duration) -> Socks5Client {
         self.idle_timeout = timeout;
         self
     }
@@ -332,7 +332,7 @@ impl Socks5Client {
 
         // Give client a fixed amount of time to complete negotiation.
         // This also includes the time it takes to connect to the target! (TODO Should it?)
-        match timeout(Duration::from_secs(negotiation_timeout), negotiation).await {
+        match timeout(negotiation_timeout, negotiation).await {
             Ok(res) => {
                 let remote_stream = res?;
 
@@ -394,13 +394,14 @@ async fn main() -> io::Result<()> {
         None => None
     };
 
+    let negotiation_timeout = Duration::from_secs(opt.negotiation_timeout);
+    let idle_timeout = Duration::from_secs(opt.idle_timeout);
+
     loop {
         match listener.accept().await {
             Ok((socket, sock_addr)) => {
                 let client_id = format!("{}", sock_addr);
                 let bind_addr = bind_addr.clone();
-                let negotiation_timeout = opt.negotiation_timeout;
-                let idle_timeout = opt.idle_timeout;
                 task::spawn(async move {
                     let client = Socks5Client::new(socket, client_id.clone(), bind_addr)
                         .with_negotiation_timeout(negotiation_timeout)
