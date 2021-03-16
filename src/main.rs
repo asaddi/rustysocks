@@ -1,5 +1,5 @@
 use std::{convert::{TryFrom}, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
-use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::sleep, try_join};
+use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::{sleep, timeout}, try_join};
 use log::{debug, error, info, trace};
 use structopt::StructOpt;
 
@@ -259,7 +259,7 @@ async fn copy_loop(mut stream: TcpStream, mut remote_stream: TcpStream, client_i
                     }
                 }
             }
-            _ = sleep(Duration::from_millis(900_000)) => { // 15 minutes
+            _ = sleep(Duration::from_secs(900)) => { // 15 minutes
                 // Timeout
                 debug!("client {} timed out", client_id);
                 break;
@@ -273,21 +273,39 @@ async fn copy_loop(mut stream: TcpStream, mut remote_stream: TcpStream, client_i
     Ok(())
 }
 
-async fn process_client(mut stream: TcpStream, client_id: &str, bind_addr: Option<String>) -> io::Result<()> {
-    let auth_method = check_auth_method(&mut stream).await?;
-    send_auth_response(&mut stream, auth_method).await?;
+async fn client_negotiate(stream: &mut TcpStream, client_id: &str, bind_addr: Option<String>) -> io::Result<TcpStream> {
+    let auth_method = check_auth_method(stream).await?;
+    send_auth_response(stream, auth_method).await?;
 
-    // If we actually required authentication, we would do that here.
+    // If we actually required authentication, we would do that at this point.
 
-    let sock_addr = check_socks_request(&mut stream).await?;
-    let remote_stream = connect_socks_target(&mut stream, bind_addr, sock_addr.as_str()).await?;
+    let sock_addr = check_socks_request(stream).await?;
+    let remote_stream = connect_socks_target(stream, bind_addr, sock_addr.as_str()).await?;
     debug!("client {} connected to {}", client_id, sock_addr.as_str());
 
-    // From this point onward, it's as if the client is directly connected to the remote
+    Ok(remote_stream)
+}
 
-    copy_loop(stream, remote_stream, client_id).await?;
+async fn process_client(mut stream: TcpStream, client_id: &str, bind_addr: Option<String>) -> io::Result<()> {
+    let negotiation = client_negotiate(&mut stream, client_id, bind_addr);
 
-    Ok(())
+    // Give client 30 seconds. This also includes the time it takes to
+    // connect to the target! (TODO Should it?)
+    match timeout(Duration::from_secs(30), negotiation).await {
+        Ok(res) => {
+            let remote_stream = res?;
+
+            // From this point onward, it's as if the client is directly connected to the remote
+
+            copy_loop(stream, remote_stream, client_id).await?;
+
+            Ok(())
+        }
+        Err(_) => {
+            // Negotiation timed out
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+        }
+    }
 }
 
 #[derive(Debug, StructOpt)]
