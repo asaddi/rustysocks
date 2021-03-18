@@ -67,7 +67,7 @@ impl Socks5Protocol {
         }
     }
 
-    async fn check_auth_method(self: &mut Socks5Protocol) -> io::Result<Socks5AuthMethod> {
+    async fn check_auth_method(&mut self) -> io::Result<Socks5AuthMethod> {
         let mut buf = [0u8; 256];
 
         self.stream.read_exact(&mut buf[0..2]).await?;
@@ -87,12 +87,12 @@ impl Socks5Protocol {
         Ok(Socks5AuthMethod::Invalid)
     }
 
-    async fn send_auth_response(self: &mut Socks5Protocol, auth_method: Socks5AuthMethod) -> io::Result<()> {
+    async fn send_auth_response(&mut self, auth_method: Socks5AuthMethod) -> io::Result<()> {
         self.stream.write_all(&[SOCKS5_VERSION, auth_method as u8]).await?;
         self.stream.flush().await
     }
 
-    async fn check_socks_request(self: &mut Socks5Protocol) -> io::Result<String> {
+    async fn check_socks_request(&mut self) -> io::Result<String> {
         let mut buf = [0u8; 257]; // max 255 for domain + 2 for port
 
         self.stream.read_exact(&mut buf[0..4]).await?;
@@ -162,7 +162,7 @@ impl Socks5Protocol {
         Ok(sock_addr)
     }
 
-    async fn connect_socks_target(self: &mut Socks5Protocol, target_addr: &str) -> io::Result<TcpStream> {
+    async fn connect_socks_target(&mut self, target_addr: &str) -> io::Result<TcpStream> {
         // Attempt the connection
         let remote_result = match &self.bind_addr {
             Some(ip_addr) => {
@@ -220,7 +220,7 @@ impl Socks5Protocol {
         }
     }
 
-    async fn copy_loop(mut self: Socks5Protocol, mut remote_stream: TcpStream, idle_timeout: Duration) -> io::Result<()> {
+    async fn copy_loop(mut self, mut remote_stream: TcpStream, idle_timeout: Duration) -> io::Result<()> {
         let mut client_buf = vec![0u8; 2048];
         let mut remote_buf = vec![0u8; 2048];
 
@@ -276,7 +276,7 @@ impl Socks5Protocol {
         Ok(())
     }
 
-    async fn send_error(self: &mut Socks5Protocol, reply: Socks5Reply) -> io::Result<()> {
+    async fn send_error(&mut self, reply: Socks5Reply) -> io::Result<()> {
         self.stream.write_all(&[SOCKS5_VERSION, reply as u8, /* reserved */ 0x00,
             /* addr */ Socks5AddressType::V4 as u8, 0, 0, 0, 0,
             /* port */ 0, 0]).await?;
@@ -305,17 +305,17 @@ impl Socks5Client {
         }
     }
 
-    pub fn with_negotiation_timeout(mut self: Socks5Client, timeout: Duration) -> Socks5Client {
+    pub fn with_negotiation_timeout(mut self, timeout: Duration) -> Socks5Client {
         self.negotiation_timeout = timeout;
         self
     }
 
-    pub fn with_idle_timeout(mut self: Socks5Client, timeout: Duration) -> Socks5Client {
+    pub fn with_idle_timeout(mut self, timeout: Duration) -> Socks5Client {
         self.idle_timeout = timeout;
         self
     }
 
-    pub async fn handle(mut self: Socks5Client) -> io::Result<()> {
+    pub async fn handle(mut self) -> io::Result<()> {
         let negotiation_timeout = self.negotiation_timeout;
 
         let negotiation = async {
