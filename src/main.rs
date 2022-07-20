@@ -344,7 +344,7 @@ impl Socks5Client {
             }
             Err(_) => {
                 // Negotiation timed out
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+                Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
             }
         }
     }
