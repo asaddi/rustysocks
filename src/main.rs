@@ -1,7 +1,7 @@
-use std::{convert::{TryFrom}, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
+use std::{convert::TryFrom, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
 use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::{sleep, timeout}, try_join};
 use log::{debug, error, info, trace};
-use structopt::StructOpt;
+use clap::Parser;
 
 const SOCKS5_VERSION: u8 = 0x05;
 
@@ -350,28 +350,28 @@ impl Socks5Client {
     }
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(about)]
+#[derive(Parser, Debug)]
+#[command(about)]
 struct Opt {
-    #[structopt(short, long, default_value = "0.0.0.0")]
+    #[arg(short, long, value_name = "ADDRESS", default_value = "0.0.0.0")]
     listen: String,
 
-    #[structopt(short, long, default_value = "1080")]
+    #[arg(short, long, default_value = "1080")]
     port: u16,
 
-    #[structopt(short, long)]
+    #[arg(short, long, value_name = "ADDRESS")]
     bind: Option<String>,
 
-    #[structopt(short = "t", long = "timeout", default_value = "30")]
+    #[arg(short = 't', long = "timeout", value_name = "SECONDS", default_value = "30")]
     negotiation_timeout: u64,
 
-    #[structopt(short = "T", long = "idle-timeout", default_value = "900")]
+    #[arg(short = 'T', long = "idle-timeout", value_name = "SECONDS", default_value = "900")]
     idle_timeout: u64
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     env_logger::init();
 
