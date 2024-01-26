@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
 use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::{sleep, timeout}, try_join};
-use log::{debug, error, info, trace};
+use tracing::{Level, event};
 use clap::Parser;
 
 const SOCKS5_VERSION: u8 = 0x05;
@@ -174,7 +174,7 @@ impl Socks5Protocol {
         if let Ok(remote_stream) = remote_result {
             // FIXME we currently don't send the bind addr/bind port. But browsers don't seem to care.
             self.send_error(Socks5Reply::Success).await?;
-            debug!("client {} connected to {}", self.client_id, target_addr);
+            event!(Level::DEBUG, "client {} connected to {}", self.client_id, target_addr);
             Ok(remote_stream)
         } else {
             // FIXME map errors to appropriate SOCKS5 replies
@@ -229,16 +229,16 @@ impl Socks5Protocol {
                     match res {
                         Ok(n) if n > 0 => {
                             if remote_stream.write_all(&client_buf[..n]).await.is_err() {
-                                debug!("client {} remote write error", self.client_id);
+                                event!(Level::DEBUG, "client {} remote write error", self.client_id);
                                 break;
                             }
                         }
                         Ok(_) => {
-                            trace!("client {} client EOF", self.client_id);
+                            event!(Level::TRACE, "client {} client EOF", self.client_id);
                             break;
                         }
                         Err(e) => {
-                            debug!("client {} client read error: {}", self.client_id, e);
+                            event!(Level::TRACE, "client {} client read error: {}", self.client_id, e);
                             break;
                         }
                     }
@@ -247,23 +247,23 @@ impl Socks5Protocol {
                     match res {
                         Ok(n) if n > 0 => {
                             if self.stream.write_all(&remote_buf[..n]).await.is_err() {
-                                debug!("client {} client write error", self.client_id);
+                                event!(Level::DEBUG, "client {} client write error", self.client_id);
                                 break;
                             }
                         }
                         Ok(_) => {
-                            trace!("client {} remote EOF", self.client_id);
+                            event!(Level::TRACE, "client {} remote EOF", self.client_id);
                             break;
                         }
                         Err(e) => {
-                            debug!("client {} remote read error: {} ", self.client_id, e);
+                            event!(Level::DEBUG, "client {} remote read error: {} ", self.client_id, e);
                             break;
                         }
                     }
                 }
                 _ = sleep(idle_timeout) => {
                     // Timeout
-                    debug!("client {} timed out", self.client_id);
+                    event!(Level::DEBUG, "client {} timed out", self.client_id);
                     break;
                 }
             }
@@ -371,11 +371,11 @@ struct Opt {
 async fn main() -> io::Result<()> {
     let opt = Opt::parse();
 
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     let listen_addr_port = format!("{}:{}", opt.listen, opt.port);
     let listener = TcpListener::bind(listen_addr_port).await?;
-    info!("Listening on {}", listener.local_addr().unwrap());
+    event!(Level::INFO, "Listening on {}", listener.local_addr().unwrap());
 
     let bind_addr = match opt.bind {
         Some(addr) => {
@@ -385,7 +385,7 @@ async fn main() -> io::Result<()> {
             if addrs.count() == 0 {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("failed to resolve bind address {}", addr)));
             } else {
-                info!("Binding on {}", addr);
+                event!(Level::INFO, "Binding on {}", addr);
                 Some(sock_addr)
             }
         }
@@ -407,13 +407,13 @@ async fn main() -> io::Result<()> {
                     match client.handle().await {
                         Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => { /* ignore */ }
                         Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => { /* ignore */ }
-                        Err(e) => debug!("client {} error: {}", client_id, e),
+                        Err(e) => event!(Level::DEBUG, "client {} error: {}", client_id, e),
                         Ok(_) => {}
                     }
                 });
             },
             Err(e) => {
-                error!("accept error: {}", e);
+                event!(Level::ERROR, "accept error: {}", e);
                 // Avoid hard spinning in the accept loop
                 sleep(Duration::from_millis(100)).await;
             }
