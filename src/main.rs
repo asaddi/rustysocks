@@ -115,10 +115,9 @@ impl Socks5Protocol {
             Ok(Socks5AddressType::V4) => {
                 self.stream.read_exact(&mut buf[0..6]).await?; // 4 bytes IP address + 2 for port
 
-                // Is there no way to go from slice -> Ipv4Addr directly?
-                let mut addr_buf = [0u8; 4];
-                addr_buf.copy_from_slice(&buf[0..4]);
-                let addr = Ipv4Addr::from(addr_buf);
+                // Can't convert to Ipv4Addr directly from slice, so first convert to array...
+                let raw: [u8; 4] = buf[0..4].try_into().unwrap();
+                let addr = Ipv4Addr::from(raw);
 
                 let port = Socks5Protocol::get_port(&buf[4..6]);
 
@@ -128,9 +127,9 @@ impl Socks5Protocol {
             Ok(Socks5AddressType::V6) => {
                 self.stream.read_exact(&mut buf[0..18]).await?; // 16 bytes for IPv6 address + 2 for port
 
-                let mut addr_buf = [0u8; 16];
-                addr_buf.copy_from_slice(&buf[0..16]);
-                let addr = Ipv6Addr::from(addr_buf);
+                // Can't convert to Ipv6Addr directly from slice, so first convert to array...
+                let raw: [u8; 16] = buf[0..16].try_into().unwrap();
+                let addr = Ipv6Addr::from(raw);
 
                 let port = Socks5Protocol::get_port(&buf[16..18]);
 
@@ -284,9 +283,8 @@ impl Socks5Protocol {
     }
 
     fn get_port(s: &[u8]) -> u16 {
-        let mut buf = [0u8; 2];
-        buf.copy_from_slice(s); // slice better be 2 bytes or we panic!
-        u16::from_be_bytes(buf) // network order is big endian
+        // slice better be 2 bytes or we panic!
+        u16::from_be_bytes(s.try_into().unwrap()) // network order is big endian
     }
 }
 
