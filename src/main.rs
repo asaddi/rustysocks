@@ -3,6 +3,8 @@ use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocke
 use tracing::{Level, event};
 use clap::Parser;
 
+const IO_BUFFER_SIZE: usize = 32768;
+
 const SOCKS5_VERSION: u8 = 0x05;
 
 enum Socks5AuthMethod {
@@ -220,8 +222,8 @@ impl Socks5Protocol {
     }
 
     async fn copy_loop(mut self, mut remote_stream: TcpStream, idle_timeout: Duration) -> io::Result<()> {
-        let mut client_buf = vec![0u8; 2048];
-        let mut remote_buf = vec![0u8; 2048];
+        let mut client_buf = vec![0u8; IO_BUFFER_SIZE];
+        let mut remote_buf = vec![0u8; IO_BUFFER_SIZE];
 
         loop {
             tokio::select! {
