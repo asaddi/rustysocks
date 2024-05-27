@@ -7,6 +7,7 @@ const IO_BUFFER_SIZE: usize = 32768;
 
 const SOCKS5_VERSION: u8 = 0x05;
 
+#[derive(Debug)]
 enum Socks5AuthMethod {
     NoAuth = 0x00,
     // GSSAPI = 0x01,
@@ -14,12 +15,14 @@ enum Socks5AuthMethod {
     Invalid = 0xff,
 }
 
+#[derive(Debug)]
 enum Socks5Command {
     Connect = 0x01,
     // Bind = 0x02,
     // UDPAssociate = 0x03,
 }
 
+#[derive(Debug)]
 enum Socks5AddressType {
     V4 = 0x01,
     DomainName = 0x03,
@@ -42,6 +45,7 @@ impl TryFrom<u8> for Socks5AddressType {
     }
 }
 
+#[derive(Debug)]
 enum Socks5Reply {
     Success = 0x00,
     GeneralFailure = 0x01,
@@ -174,9 +178,8 @@ impl Socks5Protocol {
 
         // And return the appropriate reply
         if let Ok(remote_stream) = remote_result {
-            // FIXME we currently don't send the bind addr/bind port. But browsers don't seem to care.
-            self.send_error(Socks5Reply::Success).await?;
             event!(Level::DEBUG, "client {} connected to {}", self.client_id, target_addr);
+            self.send_success(&remote_stream).await?;
             Ok(remote_stream)
         } else {
             // FIXME map errors to appropriate SOCKS5 replies
@@ -278,9 +281,32 @@ impl Socks5Protocol {
     }
 
     async fn send_error(&mut self, reply: Socks5Reply) -> io::Result<()> {
+        event!(Level::TRACE, "sending reply {:?}", reply);
         self.stream.write_all(&[SOCKS5_VERSION, reply as u8, /* reserved */ 0x00,
             /* addr */ Socks5AddressType::V4 as u8, 0, 0, 0, 0,
             /* port */ 0, 0]).await?;
+        self.stream.flush().await
+    }
+
+    async fn send_success(&mut self, stream: &TcpStream) -> io::Result<()> {
+        self.stream.write_all(&[SOCKS5_VERSION, Socks5Reply::Success as u8, /* reserved */ 0x00]).await?;
+        let addr = stream.local_addr().unwrap();
+        match addr {
+            SocketAddr::V4(addr_v4) => {
+                event!(Level::TRACE, "sending success {:?}", &addr_v4);
+                // TODO would it be better to write this out as a single operation? write_vectored?
+                self.stream.write_all(&[Socks5AddressType::V4 as u8]).await?;
+                self.stream.write_all(&addr_v4.ip().octets()).await?;
+                self.stream.write_u16(addr_v4.port()).await?;
+            }
+            SocketAddr::V6(addr_v6) => {
+                event!(Level::TRACE, "sending success {:?}", &addr_v6);
+                // TODO see above
+                self.stream.write_all(&[Socks5AddressType::V6 as u8]).await?;
+                self.stream.write_all(&addr_v6.ip().octets()).await?;
+                self.stream.write_u16(addr_v6.port()).await?;
+            }
+        }
         self.stream.flush().await
     }
 
