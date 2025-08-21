@@ -1,7 +1,17 @@
-use std::{convert::TryFrom, net::{Ipv4Addr, Ipv6Addr, SocketAddr}, time::Duration};
-use tokio::{io::{self, AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpSocket, TcpStream, lookup_host}, task, time::{sleep, timeout}, try_join};
-use tracing::{Level, event};
 use clap::Parser;
+use std::{
+    convert::TryFrom,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
+use tokio::{
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    net::{lookup_host, TcpListener, TcpSocket, TcpStream},
+    task,
+    time::{sleep, timeout},
+    try_join,
+};
+use tracing::{event, Level};
 
 const IO_BUFFER_SIZE: usize = 32768;
 
@@ -61,7 +71,7 @@ enum Socks5Reply {
 struct Socks5Protocol {
     stream: TcpStream,
     client_id: String,
-    bind_addr: Option<String>
+    bind_addr: Option<String>,
 }
 
 impl Socks5Protocol {
@@ -69,7 +79,7 @@ impl Socks5Protocol {
         Socks5Protocol {
             stream,
             client_id,
-            bind_addr
+            bind_addr,
         }
     }
 
@@ -94,7 +104,9 @@ impl Socks5Protocol {
     }
 
     async fn send_auth_response(&mut self, auth_method: Socks5AuthMethod) -> io::Result<()> {
-        self.stream.write_all(&[SOCKS5_VERSION, auth_method as u8]).await?;
+        self.stream
+            .write_all(&[SOCKS5_VERSION, auth_method as u8])
+            .await?;
         self.stream.flush().await
     }
 
@@ -104,15 +116,24 @@ impl Socks5Protocol {
         self.stream.read_exact(&mut buf[0..4]).await?;
         if buf[0] != SOCKS5_VERSION {
             self.send_error(Socks5Reply::GeneralFailure).await?;
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid request"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid request",
+            ));
         }
         if buf[1] != Socks5Command::Connect as u8 {
             self.send_error(Socks5Reply::CommandNotSupported).await?;
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "command not supported"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "command not supported",
+            ));
         }
         if buf[2] != 0x00u8 {
             self.send_error(Socks5Reply::GeneralFailure).await?;
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid request"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid request",
+            ));
         }
 
         // Now for the address...
@@ -146,21 +167,29 @@ impl Socks5Protocol {
 
                 let len = buf[0] as usize;
 
-                self.stream.read_exact(&mut buf[0..len+2]).await?; // +2 more for port
+                self.stream.read_exact(&mut buf[0..len + 2]).await?; // +2 more for port
 
                 // No where does RFC1928 mention unicode, but whatever...
                 if let Ok(addr) = std::str::from_utf8(&buf[0..len]) {
-                    let port = Socks5Protocol::get_port(&buf[len..len+2]);
+                    let port = Socks5Protocol::get_port(&buf[len..len + 2]);
 
                     sock_addr = format!("{}:{}", addr, port);
                 } else {
-                    self.send_error(Socks5Reply::AddressTypeNotSupported).await?;
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "address type not supported"));
+                    self.send_error(Socks5Reply::AddressTypeNotSupported)
+                        .await?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "address type not supported",
+                    ));
                 }
             }
             _ => {
-                self.send_error(Socks5Reply::AddressTypeNotSupported).await?;
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "address type not supported"));
+                self.send_error(Socks5Reply::AddressTypeNotSupported)
+                    .await?;
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "address type not supported",
+                ));
             }
         }
 
@@ -172,19 +201,27 @@ impl Socks5Protocol {
         let remote_result = match &self.bind_addr {
             Some(ip_addr) => {
                 Socks5Protocol::bind_and_connect_to_addr(ip_addr.as_str(), target_addr).await
-            },
-            None => TcpStream::connect(target_addr).await
+            }
+            None => TcpStream::connect(target_addr).await,
         };
 
         // And return the appropriate reply
         if let Ok(remote_stream) = remote_result {
-            event!(Level::DEBUG, "client {} connected to {}", self.client_id, target_addr);
+            event!(
+                Level::DEBUG,
+                "client {} connected to {}",
+                self.client_id,
+                target_addr
+            );
             self.send_success(&remote_stream).await?;
             Ok(remote_stream)
         } else {
             // FIXME map errors to appropriate SOCKS5 replies
             self.send_error(Socks5Reply::ConnectionRefused).await?;
-            Err(io::Error::new(io::ErrorKind::ConnectionRefused, format!("failed to connect to {}", target_addr)))
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("failed to connect to {}", target_addr),
+            ))
         }
     }
 
@@ -218,13 +255,20 @@ impl Socks5Protocol {
                     }
                 }
 
-                Err(io::Error::new(io::ErrorKind::InvalidInput, format!("failed to resolve address {}", addr)))
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to resolve address {}", addr),
+                ))
             }
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         }
     }
 
-    async fn copy_loop(mut self, mut remote_stream: TcpStream, idle_timeout: Duration) -> io::Result<()> {
+    async fn copy_loop(
+        mut self,
+        mut remote_stream: TcpStream,
+        idle_timeout: Duration,
+    ) -> io::Result<()> {
         let mut client_buf = vec![0u8; IO_BUFFER_SIZE];
         let mut remote_buf = vec![0u8; IO_BUFFER_SIZE];
 
@@ -282,27 +326,48 @@ impl Socks5Protocol {
 
     async fn send_error(&mut self, reply: Socks5Reply) -> io::Result<()> {
         event!(Level::TRACE, "sending reply {:?}", reply);
-        self.stream.write_all(&[SOCKS5_VERSION, reply as u8, /* reserved */ 0x00,
-            /* addr */ Socks5AddressType::V4 as u8, 0, 0, 0, 0,
-            /* port */ 0, 0]).await?;
+        self.stream
+            .write_all(&[
+                SOCKS5_VERSION,
+                reply as u8,
+                /* reserved */ 0x00,
+                /* addr */ Socks5AddressType::V4 as u8,
+                0,
+                0,
+                0,
+                0,
+                /* port */ 0,
+                0,
+            ])
+            .await?;
         self.stream.flush().await
     }
 
     async fn send_success(&mut self, stream: &TcpStream) -> io::Result<()> {
-        self.stream.write_all(&[SOCKS5_VERSION, Socks5Reply::Success as u8, /* reserved */ 0x00]).await?;
+        self.stream
+            .write_all(&[
+                SOCKS5_VERSION,
+                Socks5Reply::Success as u8,
+                /* reserved */ 0x00,
+            ])
+            .await?;
         let addr = stream.local_addr().unwrap();
         match addr {
             SocketAddr::V4(addr_v4) => {
                 event!(Level::TRACE, "sending success {:?}", &addr_v4);
                 // TODO would it be better to write this out as a single operation? write_vectored?
-                self.stream.write_all(&[Socks5AddressType::V4 as u8]).await?;
+                self.stream
+                    .write_all(&[Socks5AddressType::V4 as u8])
+                    .await?;
                 self.stream.write_all(&addr_v4.ip().octets()).await?;
                 self.stream.write_u16(addr_v4.port()).await?;
             }
             SocketAddr::V6(addr_v6) => {
                 event!(Level::TRACE, "sending success {:?}", &addr_v6);
                 // TODO see above
-                self.stream.write_all(&[Socks5AddressType::V6 as u8]).await?;
+                self.stream
+                    .write_all(&[Socks5AddressType::V6 as u8])
+                    .await?;
                 self.stream.write_all(&addr_v6.ip().octets()).await?;
                 self.stream.write_u16(addr_v6.port()).await?;
             }
@@ -319,7 +384,7 @@ impl Socks5Protocol {
 struct Socks5Client {
     protocol: Socks5Protocol,
     negotiation_timeout: Duration,
-    idle_timeout: Duration
+    idle_timeout: Duration,
 }
 
 impl Socks5Client {
@@ -351,7 +416,10 @@ impl Socks5Client {
             // If we actually required authentication, we would do that at this point.
 
             let sock_addr = self.protocol.check_socks_request().await?;
-            let remote_stream = self.protocol.connect_socks_target(sock_addr.as_str()).await?;
+            let remote_stream = self
+                .protocol
+                .connect_socks_target(sock_addr.as_str())
+                .await?;
 
             io::Result::Ok(remote_stream)
         };
@@ -364,7 +432,9 @@ impl Socks5Client {
 
                 // From this point onward, it's as if the client is directly connected to the remote
 
-                self.protocol.copy_loop(remote_stream, self.idle_timeout).await?;
+                self.protocol
+                    .copy_loop(remote_stream, self.idle_timeout)
+                    .await?;
 
                 Ok(())
             }
@@ -388,11 +458,21 @@ struct Opt {
     #[arg(short, long, value_name = "ADDRESS")]
     bind: Option<String>,
 
-    #[arg(short = 't', long = "timeout", value_name = "SECONDS", default_value = "30")]
+    #[arg(
+        short = 't',
+        long = "timeout",
+        value_name = "SECONDS",
+        default_value = "30"
+    )]
     negotiation_timeout: u64,
 
-    #[arg(short = 'T', long = "idle-timeout", value_name = "SECONDS", default_value = "900")]
-    idle_timeout: u64
+    #[arg(
+        short = 'T',
+        long = "idle-timeout",
+        value_name = "SECONDS",
+        default_value = "900"
+    )]
+    idle_timeout: u64,
 }
 
 #[tokio::main]
@@ -403,7 +483,11 @@ async fn main() -> io::Result<()> {
 
     let listen_addr_port = format!("{}:{}", opt.listen, opt.port);
     let listener = TcpListener::bind(listen_addr_port).await?;
-    event!(Level::INFO, "Listening on {}", listener.local_addr().unwrap());
+    event!(
+        Level::INFO,
+        "Listening on {}",
+        listener.local_addr().unwrap()
+    );
 
     let bind_addr = match opt.bind {
         Some(addr) => {
@@ -411,13 +495,16 @@ async fn main() -> io::Result<()> {
             let sock_addr = format!("{}:0", addr);
             let addrs = lookup_host(&sock_addr).await?;
             if addrs.count() == 0 {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("failed to resolve bind address {}", addr)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to resolve bind address {}", addr),
+                ));
             } else {
                 event!(Level::INFO, "Binding on {}", addr);
                 Some(sock_addr)
             }
         }
-        None => None
+        None => None,
     };
 
     let negotiation_timeout = Duration::from_secs(opt.negotiation_timeout);
@@ -439,7 +526,7 @@ async fn main() -> io::Result<()> {
                         Ok(_) => {}
                     }
                 });
-            },
+            }
             Err(e) => {
                 event!(Level::ERROR, "accept error: {}", e);
                 // Avoid hard spinning in the accept loop
