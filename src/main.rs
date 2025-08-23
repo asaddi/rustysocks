@@ -1,4 +1,5 @@
 use clap::Parser;
+use hickory_resolver::{config::*, name_server::TokioConnectionProvider, Resolver};
 use std::{
     convert::TryFrom,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -9,7 +10,6 @@ use tokio::{
     net::{lookup_host, TcpListener, TcpSocket, TcpStream},
     task,
     time::{sleep, timeout},
-    try_join,
 };
 use tracing::{event, Level};
 
@@ -72,14 +72,21 @@ struct Socks5Protocol {
     stream: TcpStream,
     client_id: String,
     bind_addr: Option<String>,
+    resolver: Resolver<TokioConnectionProvider>,
 }
 
 impl Socks5Protocol {
     pub fn new(stream: TcpStream, client_id: String, bind_addr: Option<String>) -> Socks5Protocol {
+        let resolver = Resolver::builder_with_config(
+            ResolverConfig::cloudflare(),
+            TokioConnectionProvider::default(),
+        )
+        .build();
         Socks5Protocol {
             stream,
             client_id,
             bind_addr,
+            resolver,
         }
     }
 
@@ -110,7 +117,7 @@ impl Socks5Protocol {
         self.stream.flush().await
     }
 
-    async fn check_socks_request(&mut self) -> io::Result<String> {
+    async fn check_socks_request(&mut self) -> io::Result<(String, u16)> {
         let mut buf = [0u8; 257]; // max 255 for domain + 2 for port
 
         self.stream.read_exact(&mut buf[0..4]).await?;
@@ -138,6 +145,7 @@ impl Socks5Protocol {
 
         // Now for the address...
         let sock_addr: String;
+        let sock_port: u16;
         match Socks5AddressType::try_from(buf[3]) {
             Ok(Socks5AddressType::V4) => {
                 self.stream.read_exact(&mut buf[0..6]).await?; // 4 bytes IP address + 2 for port
@@ -148,8 +156,8 @@ impl Socks5Protocol {
 
                 let port = Socks5Protocol::get_port(&buf[4..6]);
 
-                // Gotta be a better way...
-                sock_addr = format!("{}:{}", addr, port);
+                sock_addr = format!("{addr}");
+                sock_port = port;
             }
             Ok(Socks5AddressType::V6) => {
                 self.stream.read_exact(&mut buf[0..18]).await?; // 16 bytes for IPv6 address + 2 for port
@@ -160,7 +168,8 @@ impl Socks5Protocol {
 
                 let port = Socks5Protocol::get_port(&buf[16..18]);
 
-                sock_addr = format!("{}:{}", addr, port);
+                sock_addr = format!("{addr}");
+                sock_port = port;
             }
             Ok(Socks5AddressType::DomainName) => {
                 self.stream.read_exact(&mut buf[0..1]).await?;
@@ -173,7 +182,8 @@ impl Socks5Protocol {
                 if let Ok(addr) = std::str::from_utf8(&buf[0..len]) {
                     let port = Socks5Protocol::get_port(&buf[len..len + 2]);
 
-                    sock_addr = format!("{}:{}", addr, port);
+                    sock_addr = addr.to_string();
+                    sock_port = port;
                 } else {
                     self.send_error(Socks5Reply::AddressTypeNotSupported)
                         .await?;
@@ -193,25 +203,42 @@ impl Socks5Protocol {
             }
         }
 
-        Ok(sock_addr)
+        Ok((sock_addr, sock_port))
     }
 
-    async fn connect_socks_target(&mut self, target_addr: &str) -> io::Result<TcpStream> {
+    async fn connect_socks_target(&mut self, target_addr: (&str, u16)) -> io::Result<TcpStream> {
         // Attempt the connection
         let remote_result = match &self.bind_addr {
             Some(ip_addr) => {
-                Socks5Protocol::bind_and_connect_to_addr(ip_addr.as_str(), target_addr).await
+                self.bind_and_connect_to_addr(ip_addr.as_str(), target_addr)
+                    .await
             }
-            None => TcpStream::connect(target_addr).await,
+            None => {
+                let response = self.resolver.lookup_ip(target_addr.0).await?;
+                if let Some(addr) = response.iter().next() {
+                    TcpStream::connect((addr, target_addr.1)).await
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        format!("failed to resolve {}", target_addr.0),
+                    ))
+                }
+            }
         };
 
         // And return the appropriate reply
         if let Ok(remote_stream) = remote_result {
             event!(
                 Level::DEBUG,
-                "client {} connected to {}",
+                "client {} connected to {}:{} ({})",
                 self.client_id,
-                target_addr
+                target_addr.0,
+                target_addr.1,
+                if remote_stream.peer_addr().unwrap().is_ipv4() {
+                    "v4"
+                } else {
+                    "v6"
+                }
             );
             self.send_success(&remote_stream).await?;
             Ok(remote_stream)
@@ -220,48 +247,51 @@ impl Socks5Protocol {
             self.send_error(Socks5Reply::ConnectionRefused).await?;
             Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
-                format!("failed to connect to {}", target_addr),
+                format!("failed to connect to {}:{}", target_addr.0, target_addr.1),
             ))
         }
     }
 
-    async fn bind_and_connect_to_addr(bind_addr: &str, addr: &str) -> io::Result<TcpStream> {
-        match try_join!(
-            // Perform the lookups concurrently...
-            lookup_host(bind_addr),
-            lookup_host(addr)
-        ) {
-            Ok((bind_addrs, addrs_raw)) => {
-                let addrs: Vec<SocketAddr> = addrs_raw.collect();
+    async fn bind_and_connect_to_addr(
+        &self,
+        bind_addr: &str,
+        target_addr: (&str, u16),
+    ) -> io::Result<TcpStream> {
+        // FIXME These lookup calls used to be concurrent
 
-                for baddr in bind_addrs {
-                    for addr in &addrs {
-                        // Only if bind address type == target address type
-                        if baddr.is_ipv4() == addr.is_ipv4() {
-                            let socket = if baddr.is_ipv4() {
-                                TcpSocket::new_v4()
-                            } else {
-                                TcpSocket::new_v6()
-                            }?;
+        // NB We use tokio's lookup_host for the bind address since its
+        // resolution is potentially simpler.
+        let bind_addrs = lookup_host(bind_addr).await?;
 
-                            socket.set_reuseaddr(true)?;
+        // The target address, on the other hand, will use the full might of
+        // hickory-resolver
+        let addrs_raw = self.resolver.lookup_ip(target_addr.0).await?;
 
-                            if socket.bind(baddr).is_ok() {
-                                if let Ok(stream) = socket.connect(*addr).await {
-                                    return Ok(stream);
-                                }
-                            }
+        for baddr in bind_addrs {
+            for addr in addrs_raw.iter() {
+                // Only if bind address type == target address type
+                if baddr.is_ipv4() == addr.is_ipv4() {
+                    let socket = if baddr.is_ipv4() {
+                        TcpSocket::new_v4()
+                    } else {
+                        TcpSocket::new_v6()
+                    }?;
+
+                    socket.set_reuseaddr(true)?;
+
+                    if socket.bind(baddr).is_ok() {
+                        if let Ok(stream) = socket.connect((addr, target_addr.1).into()).await {
+                            return Ok(stream);
                         }
                     }
                 }
-
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("failed to resolve address {}", addr),
-                ))
             }
-            Err(e) => Err(e),
         }
+
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("failed to resolve address {}", target_addr.0),
+        ))
     }
 
     async fn copy_loop(
@@ -418,7 +448,7 @@ impl Socks5Client {
             let sock_addr = self.protocol.check_socks_request().await?;
             let remote_stream = self
                 .protocol
-                .connect_socks_target(sock_addr.as_str())
+                .connect_socks_target((sock_addr.0.as_str(), sock_addr.1))
                 .await?;
 
             io::Result::Ok(remote_stream)
