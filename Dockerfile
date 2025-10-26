@@ -6,10 +6,10 @@ COPY src src
 
 RUN cargo build --release
 
-FROM debian:12-slim
+FROM debian:trixie-slim
 
-COPY --from=build /build/target/release/rustysocks /usr/bin
+COPY --from=build /build/target/release/rustysocks /usr/local/bin
 
 EXPOSE 1080
-ENTRYPOINT ["/usr/bin/rustysocks"]
+ENTRYPOINT ["/usr/local/bin/rustysocks"]
 CMD ["-l", "0.0.0.0"]
