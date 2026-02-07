@@ -1,0 +1,34 @@
+#!/bin/sh
+
+# PROVIDE: rustysocks
+# REQUIRE: LOGIN DAEMON NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf.local or /etc/rc.conf
+# to enable this service:
+#
+# rustysocks_enable (bool):     Set to NO by default.
+#                               Set it to YES to enable rustysocks.
+# rustysocks_args (str):        Arguments passed to rustysocks.
+#                               Default is "-l localhost"
+# rustysocks_user (user):       Set user to run rustysocks.
+#                               Default is "nobody".
+
+. /etc/rc.subr
+
+name=rustysocks
+rcvar=${name}_enable
+
+load_rc_config $name
+: ${rustysocks_enable:="NO"}
+: ${rustysocks_chdir:="/"}
+: ${rustysocks_withuser:="nobody"}
+: ${rustysocks_cmd:="/usr/local/bin/rustysocks"}
+: ${rustysocks_args:="-l localhost"}
+: ${rustysocks_env:="NO_COLOR=1"}
+
+pidfile=/var/run/${name}.pid
+command=/usr/sbin/daemon
+command_args="-f -P ${pidfile} -r -t ${name} -S -u ${rustysocks_withuser} ${rustysocks_cmd} ${rustysocks_args}"
+
+run_rc_command "$1"
