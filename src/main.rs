@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 use clap::Parser;
 use std::{
     convert::TryFrom,
@@ -149,7 +151,7 @@ impl Socks5Protocol {
                 let port = Socks5Protocol::get_port(&buf[4..6]);
 
                 // Gotta be a better way...
-                sock_addr = format!("{}:{}", addr, port);
+                sock_addr = format!("{addr}:{port}");
             }
             Ok(Socks5AddressType::V6) => {
                 self.stream.read_exact(&mut buf[0..18]).await?; // 16 bytes for IPv6 address + 2 for port
@@ -160,7 +162,7 @@ impl Socks5Protocol {
 
                 let port = Socks5Protocol::get_port(&buf[16..18]);
 
-                sock_addr = format!("{}:{}", addr, port);
+                sock_addr = format!("{addr}:{port}");
             }
             Ok(Socks5AddressType::DomainName) => {
                 self.stream.read_exact(&mut buf[0..1]).await?;
@@ -173,7 +175,7 @@ impl Socks5Protocol {
                 if let Ok(addr) = std::str::from_utf8(&buf[0..len]) {
                     let port = Socks5Protocol::get_port(&buf[len..len + 2]);
 
-                    sock_addr = format!("{}:{}", addr, port);
+                    sock_addr = format!("{addr}:{port}");
                 } else {
                     self.send_error(Socks5Reply::AddressTypeNotSupported)
                         .await?;
@@ -220,7 +222,7 @@ impl Socks5Protocol {
             self.send_error(Socks5Reply::ConnectionRefused).await?;
             Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
-                format!("failed to connect to {}", target_addr),
+                format!("failed to connect to {target_addr}"),
             ))
         }
     }
@@ -257,7 +259,7 @@ impl Socks5Protocol {
 
                 Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("failed to resolve address {}", addr),
+                    format!("failed to resolve address {addr}"),
                 ))
             }
             Err(e) => Err(e),
@@ -310,7 +312,7 @@ impl Socks5Protocol {
                         }
                     }
                 }
-                _ = sleep(idle_timeout) => {
+                () = sleep(idle_timeout) => {
                     // Timeout
                     event!(Level::DEBUG, "client {} timed out", self.client_id);
                     break;
@@ -392,7 +394,7 @@ impl Socks5Client {
         Socks5Client {
             protocol: Socks5Protocol::new(stream, client_id, bind_addr),
             negotiation_timeout: Duration::from_secs(30),
-            idle_timeout: Duration::from_secs(900),
+            idle_timeout: Duration::from_mins(15),
         }
     }
 
@@ -492,17 +494,16 @@ async fn main() -> io::Result<()> {
     let bind_addr = match opt.bind {
         Some(addr) => {
             // Do a trial resolution of the address
-            let sock_addr = format!("{}:0", addr);
+            let sock_addr = format!("{addr}:0");
             let addrs = lookup_host(&sock_addr).await?;
             if addrs.count() == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("failed to resolve bind address {}", addr),
+                    format!("failed to resolve bind address {addr}"),
                 ));
-            } else {
-                event!(Level::INFO, "Binding on {}", addr);
-                Some(sock_addr)
             }
+            event!(Level::INFO, "Binding on {}", addr);
+            Some(sock_addr)
         }
         None => None,
     };
@@ -513,7 +514,7 @@ async fn main() -> io::Result<()> {
     loop {
         match listener.accept().await {
             Ok((socket, sock_addr)) => {
-                let client_id = format!("{}", sock_addr);
+                let client_id = format!("{sock_addr}");
                 let bind_addr = bind_addr.clone();
                 task::spawn(async move {
                     let client = Socks5Client::new(socket, client_id.clone(), bind_addr)
@@ -523,7 +524,7 @@ async fn main() -> io::Result<()> {
                         Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => { /* ignore */ }
                         Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => { /* ignore */ }
                         Err(e) => event!(Level::DEBUG, "client {} error: {}", client_id, e),
-                        Ok(_) => {}
+                        Ok(()) => {}
                     }
                 });
             }
