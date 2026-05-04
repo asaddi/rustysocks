@@ -1,6 +1,6 @@
 [package]
 name = "rustysocks"
-version = "0.2.2"
+version = "0.2.3"
 description = "Minimalistic asynchronous SOCKS5 server"
 authors = ["Allan Saddi <allan@saddi.com>"]
 edition = "2021"

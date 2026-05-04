@@ -1,5 +1,7 @@
+#![warn(clippy::pedantic)]
+
 use clap::Parser;
-use hickory_resolver::{config::*, name_server::TokioConnectionProvider, Resolver};
+use hickory_resolver::{config::ResolverConfig, name_server::TokioConnectionProvider, Resolver};
 use std::{
     convert::TryFrom,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -208,21 +210,18 @@ impl Socks5Protocol {
 
     async fn connect_socks_target(&mut self, target_addr: (&str, u16)) -> io::Result<TcpStream> {
         // Attempt the connection
-        let remote_result = match &self.bind_addr {
-            Some(ip_addr) => {
-                self.bind_and_connect_to_addr(ip_addr.as_str(), target_addr)
-                    .await
-            }
-            None => {
-                let response = self.resolver.lookup_ip(target_addr.0).await?;
-                if let Some(addr) = response.iter().next() {
-                    TcpStream::connect((addr, target_addr.1)).await
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::AddrNotAvailable,
-                        format!("failed to resolve {}", target_addr.0),
-                    ))
-                }
+        let remote_result = if let Some(ip_addr) = &self.bind_addr {
+            self.bind_and_connect_to_addr(ip_addr.as_str(), target_addr)
+                .await
+        } else {
+            let response = self.resolver.lookup_ip(target_addr.0).await?;
+            if let Some(addr) = response.iter().next() {
+                TcpStream::connect((addr, target_addr.1)).await
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("failed to resolve {}", target_addr.0),
+                ))
             }
         };
 
@@ -340,7 +339,7 @@ impl Socks5Protocol {
                         }
                     }
                 }
-                _ = sleep(idle_timeout) => {
+                () = sleep(idle_timeout) => {
                     // Timeout
                     event!(Level::DEBUG, "client {} timed out", self.client_id);
                     break;
@@ -422,7 +421,7 @@ impl Socks5Client {
         Socks5Client {
             protocol: Socks5Protocol::new(stream, client_id, bind_addr),
             negotiation_timeout: Duration::from_secs(30),
-            idle_timeout: Duration::from_secs(900),
+            idle_timeout: Duration::from_mins(15),
         }
     }
 
@@ -522,17 +521,16 @@ async fn main() -> io::Result<()> {
     let bind_addr = match opt.bind {
         Some(addr) => {
             // Do a trial resolution of the address
-            let sock_addr = format!("{}:0", addr);
+            let sock_addr = format!("{addr}:0");
             let addrs = lookup_host(&sock_addr).await?;
             if addrs.count() == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("failed to resolve bind address {}", addr),
+                    format!("failed to resolve bind address {addr}"),
                 ));
-            } else {
-                event!(Level::INFO, "Binding on {}", addr);
-                Some(sock_addr)
             }
+            event!(Level::INFO, "Binding on {}", addr);
+            Some(sock_addr)
         }
         None => None,
     };
@@ -543,7 +541,7 @@ async fn main() -> io::Result<()> {
     loop {
         match listener.accept().await {
             Ok((socket, sock_addr)) => {
-                let client_id = format!("{}", sock_addr);
+                let client_id = format!("{sock_addr}");
                 let bind_addr = bind_addr.clone();
                 task::spawn(async move {
                     let client = Socks5Client::new(socket, client_id.clone(), bind_addr)
@@ -553,7 +551,7 @@ async fn main() -> io::Result<()> {
                         Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => { /* ignore */ }
                         Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => { /* ignore */ }
                         Err(e) => event!(Level::DEBUG, "client {} error: {}", client_id, e),
-                        Ok(_) => {}
+                        Ok(()) => {}
                     }
                 });
             }
