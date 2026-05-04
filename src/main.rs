@@ -1,7 +1,11 @@
 #![warn(clippy::pedantic)]
 
 use clap::Parser;
-use hickory_resolver::{config::ResolverConfig, name_server::TokioConnectionProvider, Resolver};
+use hickory_resolver::{
+    config::{ResolverConfig, CLOUDFLARE},
+    net::runtime::TokioRuntimeProvider,
+    Resolver,
+};
 use std::{
     convert::TryFrom,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -74,16 +78,17 @@ struct Socks5Protocol {
     stream: TcpStream,
     client_id: String,
     bind_addr: Option<String>,
-    resolver: Resolver<TokioConnectionProvider>,
+    resolver: Resolver<TokioRuntimeProvider>,
 }
 
 impl Socks5Protocol {
     pub fn new(stream: TcpStream, client_id: String, bind_addr: Option<String>) -> Socks5Protocol {
         let resolver = Resolver::builder_with_config(
-            ResolverConfig::cloudflare(),
-            TokioConnectionProvider::default(),
+            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+            TokioRuntimeProvider::default(),
         )
-        .build();
+        .build()
+        .unwrap();
         Socks5Protocol {
             stream,
             client_id,
@@ -214,7 +219,12 @@ impl Socks5Protocol {
             self.bind_and_connect_to_addr(ip_addr.as_str(), target_addr)
                 .await
         } else {
-            let response = self.resolver.lookup_ip(target_addr.0).await?;
+            let Ok(response) = self.resolver.lookup_ip(target_addr.0).await else {
+                return Err(io::Error::new(
+                    io::ErrorKind::HostUnreachable,
+                    format!("failed to resolve {}", target_addr.0),
+                ));
+            };
             if let Some(addr) = response.iter().next() {
                 TcpStream::connect((addr, target_addr.1)).await
             } else {
@@ -264,7 +274,12 @@ impl Socks5Protocol {
 
         // The target address, on the other hand, will use the full might of
         // hickory-resolver
-        let addrs_raw = self.resolver.lookup_ip(target_addr.0).await?;
+        let Ok(addrs_raw) = self.resolver.lookup_ip(target_addr.0).await else {
+            return Err(io::Error::new(
+                io::ErrorKind::HostUnreachable,
+                format!("failed to resolve {}", target_addr.0),
+            ));
+        };
 
         for baddr in bind_addrs {
             for addr in addrs_raw.iter() {
