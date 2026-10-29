@@ -1,15 +1,17 @@
-FROM rust:latest AS build
+FROM rust:alpine AS build
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock .
-COPY src src
+COPY . .
 
-RUN cargo build --release
+RUN \
+  --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+  --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+  cargo build --locked --release
 
-FROM debian:trixie-slim
+FROM alpine:latest
 
 COPY --from=build /build/target/release/rustysocks /usr/local/bin
 
 EXPOSE 1080
-ENTRYPOINT ["/usr/local/bin/rustysocks"]
-CMD ["-l", "0.0.0.0"]
+ENTRYPOINT ["/usr/local/bin/rustysocks", "-l", "0.0.0.0"]
+CMD []
