@@ -509,28 +509,42 @@ async fn main() -> io::Result<()> {
     let negotiation_timeout = Duration::from_secs(opt.negotiation_timeout);
     let idle_timeout = Duration::from_secs(opt.idle_timeout);
 
-    loop {
-        match listener.accept().await {
-            Ok((socket, sock_addr)) => {
-                let client_id = format!("{sock_addr}");
-                let bind_addr = bind_addr.clone();
-                task::spawn(async move {
-                    let client = Socks5Client::new(socket, client_id.clone(), bind_addr)
-                        .with_negotiation_timeout(negotiation_timeout)
-                        .with_idle_timeout(idle_timeout);
-                    match client.handle().await {
-                        Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => { /* ignore */ }
-                        Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => { /* ignore */ }
-                        Err(e) => event!(Level::DEBUG, "client {} error: {}", client_id, e),
-                        Ok(()) => {}
-                    }
-                });
-            }
-            Err(e) => {
-                event!(Level::ERROR, "accept error: {}", e);
-                // Avoid hard spinning in the accept loop
-                sleep(Duration::from_millis(100)).await;
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("listening for CTRL-C");
+    };
+
+    let main_loop = async {
+        loop {
+            match listener.accept().await {
+                Ok((socket, sock_addr)) => {
+                    let client_id = format!("{sock_addr}");
+                    let bind_addr = bind_addr.clone();
+                    task::spawn(async move {
+                        let client = Socks5Client::new(socket, client_id.clone(), bind_addr)
+                            .with_negotiation_timeout(negotiation_timeout)
+                            .with_idle_timeout(idle_timeout);
+                        match client.handle().await {
+                            Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => { /* ignore */ }
+                            Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => { /* ignore */
+                            }
+                            Err(e) => event!(Level::DEBUG, "client {} error: {}", client_id, e),
+                            Ok(()) => {}
+                        }
+                    });
+                }
+                Err(e) => {
+                    event!(Level::ERROR, "accept error: {}", e);
+                    // Avoid hard spinning in the accept loop
+                    sleep(Duration::from_millis(100)).await;
+                }
             }
         }
+    };
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = main_loop => {},
     }
+
+    Ok(())
 }
